@@ -366,7 +366,7 @@ inline std::tuple<double, double,
   const double & curvature,
   const double & sign,
   const double & dt
-)
+  )
 {
   // compute Dynamic Window
   DynamicWindowBounds dynamic_window = computeDynamicWindow(
