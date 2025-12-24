@@ -28,6 +28,8 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "sensor_msgs/msg/battery_state.hpp"
+#include "sensor_msgs/msg/imu.hpp"
 #include "nav2_regulated_pure_pursuit_controller/path_handler.hpp"
 #include "nav2_regulated_pure_pursuit_controller/collision_checker.hpp"
 #include "nav2_regulated_pure_pursuit_controller/parameter_handler.hpp"
@@ -208,6 +210,9 @@ protected:
    */
   double findVelocitySignChange(const nav_msgs::msg::Path & transformed_plan);
 
+  void batteryStateCallback(const sensor_msgs::msg::BatteryState::SharedPtr msg);
+  void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg);
+
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::string plugin_name_;
@@ -225,6 +230,8 @@ protected:
   geometry_msgs::msg::Twist last_command_velocity_;
   double regulated_linear_vel;
   dynamic_window_pure_pursuit::DynamicWindowBounds dynamic_window;
+  sensor_msgs::msg::BatteryState::SharedPtr battery_state_;
+  sensor_msgs::msg::Imu::SharedPtr imu_;
 
   // bool publisher
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr constraints_violation_flag_publisher_;
@@ -237,6 +244,9 @@ protected:
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Bool>>
   is_rotating_to_heading_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> carrot_arc_pub_;
+
+  rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr battery_state_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   std::unique_ptr<nav2_regulated_pure_pursuit_controller::PathHandler> path_handler_;
   std::unique_ptr<nav2_regulated_pure_pursuit_controller::ParameterHandler> param_handler_;
   std::unique_ptr<nav2_regulated_pure_pursuit_controller::CollisionChecker> collision_checker_;

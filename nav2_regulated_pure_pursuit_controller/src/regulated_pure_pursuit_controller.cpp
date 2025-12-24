@@ -80,11 +80,18 @@ void RegulatedPurePursuitController::configure(
   is_rotating_to_heading_pub_ = node->create_publisher<std_msgs::msg::Bool>(
     "is_rotating_to_heading", 1);
 
-  // create publisher
-  constraints_violation_flag_publisher_ =
-    node->create_publisher<std_msgs::msg::Bool>(
-    "constraints_violation_flag", 1);
+  // BatteryState subscription
+  battery_state_sub_ = node->create_subscription<sensor_msgs::msg::BatteryState>(
+    "/whill/states/battery_state",
+    rclcpp::QoS(1),
+    std::bind(&RegulatedPurePursuitController::batteryStateCallback, this, std::placeholders::_1));
 
+  // IMU subscription
+  auto imu_qos = rclcpp::SensorDataQoS();
+  imu_sub_ = node->create_subscription<sensor_msgs::msg::Imu>(
+    "/ouster/imu",
+    imu_qos,
+    std::bind(&RegulatedPurePursuitController::imuCallback, this, std::placeholders::_1));
 }
 
 void RegulatedPurePursuitController::cleanup()
@@ -124,6 +131,17 @@ void RegulatedPurePursuitController::deactivate()
   carrot_pub_->on_deactivate();
   curvature_carrot_pub_->on_deactivate();
   is_rotating_to_heading_pub_->on_deactivate();
+}
+
+void RegulatedPurePursuitController::batteryStateCallback(
+  const sensor_msgs::msg::BatteryState::SharedPtr msg)
+{
+  battery_state_ = msg;
+}
+
+void RegulatedPurePursuitController::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
+{
+  imu_ = msg;
 }
 
 std::unique_ptr<geometry_msgs::msg::PointStamped> RegulatedPurePursuitController::createCarrotMsg(
@@ -283,7 +301,7 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
         }
       }
     }
-    
+
     regulated_linear_vel = linear_vel;
 
     // using last command velocity as a current velocity
@@ -335,17 +353,13 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   cmd_vel.twist.angular.z = angular_vel;
 
   // evaluate whether the computed velocity is within velocity and acceleration constraints
-  std_msgs::msg::Bool constraints_violation_flag_msg;
-  constraints_violation_flag_msg.data = dynamic_window_pure_pursuit::evaluateVelocityConstraints(
-    cmd_vel.twist, last_command_velocity_, max_linear_vel, min_linear_vel, max_angular_vel,
-      min_angular_vel,
-    max_linear_accel, max_linear_decel, max_angular_accel, max_angular_decel,
-    control_duration_);
+  bool constraints_violation_flag = dynamic_window_pure_pursuit::evaluateVelocityConstraints(
+    cmd_vel.twist, last_command_velocity_, max_linear_vel, min_linear_vel,
+    max_angular_vel, min_angular_vel, max_linear_accel, max_linear_decel,
+    max_angular_accel, max_angular_decel, control_duration_);
 
-  constraints_violation_flag_publisher_->publish(constraints_violation_flag_msg);
-
-  // record dynamic window
-  dynamic_window_pure_pursuit::recordDynamicWindowData(
+  // record data
+  dynamic_window_pure_pursuit::recordData(
     regulation_curvature,
     last_command_velocity_,
     cmd_vel.twist,
@@ -355,7 +369,8 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     max_angular_vel, min_angular_vel,
     max_linear_accel, max_linear_decel,
     max_angular_accel, max_angular_decel,
-    control_duration_);
+    control_duration_,
+    pose, speed, constraints_violation_flag, battery_state_, imu_);
 
   last_command_velocity_ = cmd_vel.twist;
 

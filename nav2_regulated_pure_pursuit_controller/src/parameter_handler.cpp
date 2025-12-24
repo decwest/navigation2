@@ -111,11 +111,11 @@ ParameterHandler::ParameterHandler(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(2.5));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".max_linear_decel", rclcpp::ParameterValue(2.5));
+    node, plugin_name_ + ".max_linear_decel", rclcpp::ParameterValue(-2.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_angular_accel", rclcpp::ParameterValue(3.2));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".max_angular_decel", rclcpp::ParameterValue(3.2));
+    node, plugin_name_ + ".max_angular_decel", rclcpp::ParameterValue(-3.2));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_cancel_deceleration", rclcpp::ParameterValue(false));
   declare_parameter_if_not_declared(

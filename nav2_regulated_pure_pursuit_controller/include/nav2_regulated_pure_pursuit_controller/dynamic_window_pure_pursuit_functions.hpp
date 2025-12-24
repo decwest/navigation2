@@ -27,6 +27,10 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "sensor_msgs/msg/battery_state.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include "tf2/utils.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 
 namespace nav2_regulated_pure_pursuit_controller
@@ -83,10 +87,10 @@ inline DynamicWindowBounds computeDynamicWindow(
       if (current_vel > Eps) {
       // if the current velocity is positive, acceleration means an increase in speed
         candidate_max_vel = current_vel + max_accel * dt;
-        candidate_min_vel = current_vel - max_decel * dt;
+        candidate_min_vel = current_vel + max_decel * dt;
       } else if (current_vel < -Eps) {
       // if the current velocity is negative, acceleration means a decrease in speed
-        candidate_max_vel = current_vel + max_decel * dt;
+        candidate_max_vel = current_vel - max_decel * dt;
         candidate_min_vel = current_vel - max_accel * dt;
       } else {
       // if the current velocity is zero, allow acceleration in both directions.
@@ -142,10 +146,10 @@ inline bool evaluateVelocityConstraints(
       if (last_vel > Eps) {
         // if the last velocity is positive, acceleration means an increase in speed
         candidate_max_vel = last_vel + max_accel * dt;
-        candidate_min_vel = last_vel - max_decel * dt;
+        candidate_min_vel = last_vel + max_decel * dt;
       } else if (last_vel < -Eps) {
         // if the last velocity is negative, acceleration means a decrease in speed
-        candidate_max_vel = last_vel + max_decel * dt;
+        candidate_max_vel = last_vel - max_decel * dt;
         candidate_min_vel = last_vel - max_accel * dt;
       } else {
         // if the last velocity is zero, allow acceleration in both directions.
@@ -348,7 +352,7 @@ inline std::tuple<double, double> computeOptimalVelocityWithinDynamicWindow(
   return std::make_tuple(optimal_linear_vel, optimal_angular_vel);
 }
 
-inline void recordDynamicWindowData(
+inline void recordData(
   const double & curvature,
   const geometry_msgs::msg::Twist & current_cmd_vel,
   const geometry_msgs::msg::Twist & next_cmd_vel,
@@ -362,13 +366,20 @@ inline void recordDynamicWindowData(
   const double & max_linear_decel,
   const double & max_angular_accel,
   const double & max_angular_decel,
-  const double & dt
-){
+  const double & dt,
+  const geometry_msgs::msg::PoseStamped & pose,
+  const geometry_msgs::msg::Twist & speed,
+  const bool & constraints_violation_flag,
+  const sensor_msgs::msg::BatteryState::SharedPtr battery_state,
+  const sensor_msgs::msg::Imu::SharedPtr imu
+)
+{
   constexpr double Eps = 1e-3;
 
   // calc actual velocity
   auto calc_actual_velocity =
-    [&](const double & current_vel, const double & last_vel, const double & max_vel, const double & min_vel,
+    [&](const double & current_vel, const double & last_vel,
+    const double & max_vel, const double & min_vel,
     const double & max_accel, const double & max_decel)
     {
       double candidate_max_vel = 0.0;
@@ -377,10 +388,10 @@ inline void recordDynamicWindowData(
       if (last_vel > Eps) {
         // if the last velocity is positive, acceleration means an increase in speed
         candidate_max_vel = last_vel + max_accel * dt;
-        candidate_min_vel = last_vel - max_decel * dt;
+        candidate_min_vel = last_vel + max_decel * dt;
       } else if (last_vel < -Eps) {
         // if the last velocity is negative, acceleration means a decrease in speed
-        candidate_max_vel = last_vel + max_decel * dt;
+        candidate_max_vel = last_vel - max_decel * dt;
         candidate_min_vel = last_vel - max_accel * dt;
       } else {
         // if the last velocity is zero, allow acceleration in both directions.
@@ -393,10 +404,9 @@ inline void recordDynamicWindowData(
       candidate_min_vel = std::max(candidate_min_vel, min_vel);
 
       // check whether current_vel is within [candidate_min_vel, candidate_max_vel]
-      if (current_vel > candidate_max_vel + Eps){
+      if (current_vel > candidate_max_vel + Eps) {
         return candidate_max_vel;  // violation
-      }
-      else if (current_vel < candidate_min_vel - Eps) {
+      } else if (current_vel < candidate_min_vel - Eps) {
         return candidate_min_vel;  // violation
       } else {
         return current_vel;  // no violation
@@ -452,32 +462,56 @@ inline void recordDynamicWindowData(
 
   static bool header_written = csv_stream.tellp() > 0;
   if (!header_written) {
-    csv_stream << "timestamp,curvature,"
-                  "current_linear_vel,current_angular_vel,"
-                  "next_linear_vel,next_angular_vel,"
-                  "dw_max_linear_vel,dw_min_linear_vel,"
-                  "dw_max_angular_vel,dw_min_angular_vel,"
-                  "actual_linear_vel,actual_angular_vel,"
-                  "regulated_linear_velocity\n";
+    csv_stream << "sec,nsec,x,y,yaw,"
+      "v_real,w_real,v_now,w_now,v_cmd,w_cmd,v_nav,w_nav,"
+      "velocity_violation,"
+      "battery_v,battery_i,battery_percent,"
+      "imu_ax,imu_ay,imu_az,imu_vx,imu_vy,imu_vz,"
+      "curvature,dw_v_max,dw_v_min,dw_w_max,dw_w_min,v_reg\n";
     header_written = true;
   }
 
-  const double timestamp = rclcpp::Clock(RCL_SYSTEM_TIME).now().seconds();
+  // get time object
+  const auto now = rclcpp::Clock(RCL_SYSTEM_TIME).now();
+  const int32_t sec = static_cast<int32_t>(now.seconds());
+  const uint32_t nsec = static_cast<uint32_t>(now.nanoseconds() % 1000000000LL);
 
-  csv_stream << std::fixed << std::setprecision(6)
-             << timestamp << ','
-             << curvature << ','
-             << current_cmd_vel.linear.x << ',' << current_cmd_vel.angular.z << ','
-             << next_cmd_vel.linear.x << ',' << next_cmd_vel.angular.z << ','
-             << dynamic_window.max_linear_vel << ',' << dynamic_window.min_linear_vel << ','
-             << dynamic_window.max_angular_vel << ',' << dynamic_window.min_angular_vel << ','
-             << actual_linear_vel << ',' << actual_angular_vel << ','
-             << regulated_linear_vel
-             << '\n';
+  csv_stream  << sec << ","
+              << nsec << ","
+              << std::fixed << std::setprecision(6)
+              << pose.pose.position.x << ','
+              << pose.pose.position.y << ','
+              << tf2::getYaw(pose.pose.orientation) << ','
+              << speed.linear.x << ',' << speed.angular.z << ','
+              << current_cmd_vel.linear.x << ',' << current_cmd_vel.angular.z << ','
+              << next_cmd_vel.linear.x << ',' << next_cmd_vel.angular.z << ','
+              << actual_linear_vel << ',' << actual_angular_vel << ','
+              << (constraints_violation_flag ? 1 : 0) << ','
+              << (battery_state ? battery_state->voltage :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (battery_state ? battery_state->current :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (battery_state ? battery_state->percentage :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (imu ? imu->linear_acceleration.x :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (imu ? imu->linear_acceleration.y :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (imu ? imu->linear_acceleration.z :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (imu ? imu->angular_velocity.x :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (imu ? imu->angular_velocity.y :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (imu ? imu->angular_velocity.z :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << curvature << ','
+              << dynamic_window.max_linear_vel << ',' << dynamic_window.min_linear_vel << ','
+              << dynamic_window.max_angular_vel << ',' << dynamic_window.min_angular_vel << ','
+              << regulated_linear_vel
+              << '\n';
   csv_stream.flush();
-
 }
-
 
 }  // namespace dynamic_window_pure_pursuit
 
