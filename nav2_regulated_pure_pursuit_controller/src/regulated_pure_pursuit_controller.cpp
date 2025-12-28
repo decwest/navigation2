@@ -610,6 +610,7 @@ void RegulatedPurePursuitController::applyConstraints(
 void RegulatedPurePursuitController::setPlan(const nav_msgs::msg::Path & path)
 {
   has_reached_xy_tolerance_ = false;
+  dynamic_window_pure_pursuit::requestNewLogFile(rclcpp::Clock(RCL_SYSTEM_TIME).now());
   path_handler_->setPlan(path);
 }
 

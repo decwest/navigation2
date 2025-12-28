@@ -24,6 +24,8 @@
 #include <fstream>
 #include <iomanip>
 #include <filesystem>
+#include <ctime>
+#include <sstream>
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
@@ -54,6 +56,70 @@ struct Transform2DData
   double y;
   double yaw;
 };
+
+struct CsvLogState
+{
+  std::ofstream csv_stream;
+  bool initialized = false;
+  bool header_written = false;
+  std::string csv_path;
+};
+
+inline CsvLogState & getCsvLogState()
+{
+  static CsvLogState state;
+  return state;
+}
+
+inline std::filesystem::path getLogDir()
+{
+  static bool fallback_warned = false;
+  try {
+    const auto pkg_share =
+      ament_index_cpp::get_package_share_directory("dwpp_test_simulation");
+    std::filesystem::path log_dir = std::filesystem::path(pkg_share) / "data";
+    std::error_code ec;
+    std::filesystem::create_directories(log_dir, ec);
+    return log_dir;
+  } catch (const std::exception & e) {
+    if (!fallback_warned) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("dynamic_window_pure_pursuit"),
+        "Failed to locate dwpp_test_simulation package (%s). Falling back to /tmp.",
+        e.what());
+      fallback_warned = true;
+    }
+    return std::filesystem::path("/tmp");
+  }
+}
+
+inline std::string makeTimestampedCsvPath(const rclcpp::Time & stamp)
+{
+  const auto seconds = static_cast<std::time_t>(stamp.seconds());
+  const auto nsec = static_cast<uint32_t>(stamp.nanoseconds() % 1000000000LL);
+  std::tm tm_snapshot{};
+  if (const std::tm * tm_ptr = std::localtime(&seconds)) {
+    tm_snapshot = *tm_ptr;
+  }
+
+  std::ostringstream name;
+  name << "dynamic_window_pure_pursuit_log_"
+       << std::put_time(&tm_snapshot, "%Y%m%d_%H%M%S")
+       << "_" << std::setw(9) << std::setfill('0') << nsec
+       << ".csv";
+  return (getLogDir() / name.str()).string();
+}
+
+inline void requestNewLogFile(const rclcpp::Time & stamp)
+{
+  auto & state = getCsvLogState();
+  if (state.csv_stream.is_open()) {
+    state.csv_stream.close();
+  }
+  state.csv_path = makeTimestampedCsvPath(stamp);
+  state.initialized = false;
+  state.header_written = false;
+}
 
 /**
  * @brief Compute the dynamic window (feasible velocity bounds) based on the current speed and the given velocity and acceleration constraints.
@@ -437,42 +503,28 @@ inline void recordData(
     max_angular_accel, max_angular_decel);
 
   // record by csv
-  static std::ofstream csv_stream;
-  static bool initialized = false;
-  static std::string csv_path;
-  if (!initialized) {
-    initialized = true;
-    try {
-      const auto pkg_share =
-        ament_index_cpp::get_package_share_directory("dwpp_test_simulation");
-      std::filesystem::path log_dir = std::filesystem::path(pkg_share) / "data";
-      std::error_code ec;
-      std::filesystem::create_directories(log_dir, ec);
-      csv_path = (log_dir / "dynamic_window_pure_pursuit_log.csv").string();
-    } catch (const std::exception & e) {
-      RCLCPP_WARN(
-        rclcpp::get_logger("dynamic_window_pure_pursuit"),
-        "Failed to locate dwpp_test_simulation package (%s). Falling back to /tmp.",
-        e.what());
-      csv_path = "/tmp/dynamic_window_pure_pursuit_log.csv";
+  auto & log_state = getCsvLogState();
+  if (!log_state.initialized) {
+    log_state.initialized = true;
+    if (log_state.csv_path.empty()) {
+      log_state.csv_path = (getLogDir() / "dynamic_window_pure_pursuit_log.csv").string();
     }
-
-    csv_stream.open(csv_path, std::ios::app);
-    if (!csv_stream.is_open()) {
+    log_state.csv_stream.open(log_state.csv_path, std::ios::app);
+    if (!log_state.csv_stream.is_open()) {
       RCLCPP_WARN(
         rclcpp::get_logger("dynamic_window_pure_pursuit"),
-        "Failed to open %s for logging.", csv_path.c_str());
+        "Failed to open %s for logging.", log_state.csv_path.c_str());
       return;
     }
+    log_state.header_written = log_state.csv_stream.tellp() > 0;
   }
 
-  if (!csv_stream.is_open()) {
+  if (!log_state.csv_stream.is_open()) {
     return;
   }
 
-  static bool header_written = csv_stream.tellp() > 0;
-  if (!header_written) {
-    csv_stream << "sec,nsec,odom_base_x,odom_base_y,odom_base_yaw,"
+  if (!log_state.header_written) {
+    log_state.csv_stream << "sec,nsec,odom_base_x,odom_base_y,odom_base_yaw,"
       "map_odom_x,map_odom_y,map_odom_yaw,"
       "map_base_x,map_base_y,map_base_yaw,"
       "v_real,w_real,v_now,w_now,v_cmd,w_cmd,v_nav,w_nav,"
@@ -480,7 +532,7 @@ inline void recordData(
       "battery_v,battery_i,battery_percent,"
       "imu_ax,imu_ay,imu_az,imu_vx,imu_vy,imu_vz,"
       "curvature,dw_v_max,dw_v_min,dw_w_max,dw_w_min,v_reg\n";
-    header_written = true;
+    log_state.header_written = true;
   }
 
   // get time object
@@ -488,53 +540,55 @@ inline void recordData(
   const int32_t sec = static_cast<int32_t>(now.seconds());
   const uint32_t nsec = static_cast<uint32_t>(now.nanoseconds() % 1000000000LL);
 
-  csv_stream  << sec << ","
-              << nsec << ","
-              << std::fixed << std::setprecision(6)
-              << pose.pose.position.x << ','
-              << pose.pose.position.y << ','
-              << tf2::getYaw(pose.pose.orientation) << ','
-              << (map_to_odom.valid ? map_to_odom.x :
+  log_state.csv_stream  << sec << ","
+                        << nsec << ","
+                        << std::fixed << std::setprecision(6)
+                        << pose.pose.position.x << ','
+                        << pose.pose.position.y << ','
+                        << tf2::getYaw(pose.pose.orientation) << ','
+                        << (map_to_odom.valid ? map_to_odom.x :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (map_to_odom.valid ? map_to_odom.y :
+                        << (map_to_odom.valid ? map_to_odom.y :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (map_to_odom.valid ? map_to_odom.yaw :
+                        << (map_to_odom.valid ? map_to_odom.yaw :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (map_to_base.valid ? map_to_base.x :
+                        << (map_to_base.valid ? map_to_base.x :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (map_to_base.valid ? map_to_base.y :
+                        << (map_to_base.valid ? map_to_base.y :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (map_to_base.valid ? map_to_base.yaw :
+                        << (map_to_base.valid ? map_to_base.yaw :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << speed.linear.x << ',' << speed.angular.z << ','
-              << current_cmd_vel.linear.x << ',' << current_cmd_vel.angular.z << ','
-              << next_cmd_vel.linear.x << ',' << next_cmd_vel.angular.z << ','
-              << actual_linear_vel << ',' << actual_angular_vel << ','
-              << (constraints_violation_flag ? 1 : 0) << ','
-              << (battery_state ? battery_state->voltage :
+                        << speed.linear.x << ',' << speed.angular.z << ','
+                        << current_cmd_vel.linear.x << ',' << current_cmd_vel.angular.z << ','
+                        << next_cmd_vel.linear.x << ',' << next_cmd_vel.angular.z << ','
+                        << actual_linear_vel << ',' << actual_angular_vel << ','
+                        << (constraints_violation_flag ? 1 : 0) << ','
+                        << (battery_state ? battery_state->voltage :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (battery_state ? battery_state->current :
+                        << (battery_state ? battery_state->current :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (battery_state ? battery_state->percentage :
+                        << (battery_state ? battery_state->percentage :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (imu ? imu->linear_acceleration.x :
+                        << (imu ? imu->linear_acceleration.x :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (imu ? imu->linear_acceleration.y :
+                        << (imu ? imu->linear_acceleration.y :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (imu ? imu->linear_acceleration.z :
+                        << (imu ? imu->linear_acceleration.z :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (imu ? imu->angular_velocity.x :
+                        << (imu ? imu->angular_velocity.x :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (imu ? imu->angular_velocity.y :
+                        << (imu ? imu->angular_velocity.y :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << (imu ? imu->angular_velocity.z :
+                        << (imu ? imu->angular_velocity.z :
   std::numeric_limits<double>::quiet_NaN()) << ','
-              << curvature << ','
-              << dynamic_window.max_linear_vel << ',' << dynamic_window.min_linear_vel << ','
-              << dynamic_window.max_angular_vel << ',' << dynamic_window.min_angular_vel << ','
-              << regulated_linear_vel
-              << '\n';
-  csv_stream.flush();
+                        << curvature << ','
+                        << dynamic_window.max_linear_vel << ',' <<
+    dynamic_window.min_linear_vel << ','
+                        << dynamic_window.max_angular_vel << ',' <<
+    dynamic_window.min_angular_vel << ','
+                        << regulated_linear_vel
+                        << '\n';
+  log_state.csv_stream.flush();
 }
 
 }  // namespace dynamic_window_pure_pursuit
