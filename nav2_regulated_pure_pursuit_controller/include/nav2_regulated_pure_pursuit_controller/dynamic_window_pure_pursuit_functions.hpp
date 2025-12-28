@@ -47,6 +47,14 @@ struct DynamicWindowBounds
   double min_angular_vel;
 };
 
+struct Transform2DData
+{
+  bool valid;
+  double x;
+  double y;
+  double yaw;
+};
+
 /**
  * @brief Compute the dynamic window (feasible velocity bounds) based on the current speed and the given velocity and acceleration constraints.
  * @param current_speed     Current linear and angular velocity of the robot
@@ -371,7 +379,9 @@ inline void recordData(
   const geometry_msgs::msg::Twist & speed,
   const bool & constraints_violation_flag,
   const sensor_msgs::msg::BatteryState::SharedPtr battery_state,
-  const sensor_msgs::msg::Imu::SharedPtr imu
+  const sensor_msgs::msg::Imu::SharedPtr imu,
+  const Transform2DData & map_to_odom,
+  const Transform2DData & map_to_base
 )
 {
   constexpr double Eps = 1e-3;
@@ -462,7 +472,9 @@ inline void recordData(
 
   static bool header_written = csv_stream.tellp() > 0;
   if (!header_written) {
-    csv_stream << "sec,nsec,x,y,yaw,"
+    csv_stream << "sec,nsec,odom_base_x,odom_base_y,odom_base_yaw,"
+      "map_odom_x,map_odom_y,map_odom_yaw,"
+      "map_base_x,map_base_y,map_base_yaw,"
       "v_real,w_real,v_now,w_now,v_cmd,w_cmd,v_nav,w_nav,"
       "velocity_violation,"
       "battery_v,battery_i,battery_percent,"
@@ -482,6 +494,18 @@ inline void recordData(
               << pose.pose.position.x << ','
               << pose.pose.position.y << ','
               << tf2::getYaw(pose.pose.orientation) << ','
+              << (map_to_odom.valid ? map_to_odom.x :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (map_to_odom.valid ? map_to_odom.y :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (map_to_odom.valid ? map_to_odom.yaw :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (map_to_base.valid ? map_to_base.x :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (map_to_base.valid ? map_to_base.y :
+  std::numeric_limits<double>::quiet_NaN()) << ','
+              << (map_to_base.valid ? map_to_base.yaw :
+  std::numeric_limits<double>::quiet_NaN()) << ','
               << speed.linear.x << ',' << speed.angular.z << ','
               << current_cmd_vel.linear.x << ',' << current_cmd_vel.angular.z << ','
               << next_cmd_vel.linear.x << ',' << next_cmd_vel.angular.z << ','

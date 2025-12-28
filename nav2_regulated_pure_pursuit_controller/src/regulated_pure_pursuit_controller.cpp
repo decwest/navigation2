@@ -27,6 +27,8 @@
 #include "nav2_util/node_utils.hpp"
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
+#include "tf2/exceptions.h"
+#include "tf2/utils.hpp"
 
 using std::hypot;
 using std::min;
@@ -358,6 +360,41 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     max_angular_vel, min_angular_vel, max_linear_accel, max_linear_decel,
     max_angular_accel, max_angular_decel, control_duration_);
 
+  auto lookup_transform =
+    [&](const std::string & target_frame,
+    const std::string & source_frame) -> dynamic_window_pure_pursuit::Transform2DData
+    {
+      dynamic_window_pure_pursuit::Transform2DData data{false, 0.0, 0.0, 0.0};
+      if (!tf_) {
+        return data;
+      }
+      try {
+        const auto transform = tf_->lookupTransform(
+          target_frame, source_frame, tf2::TimePointZero);
+        data.valid = true;
+        data.x = transform.transform.translation.x;
+        data.y = transform.transform.translation.y;
+        data.yaw = tf2::getYaw(transform.transform.rotation);
+      } catch (const tf2::TransformException & ex) {
+        auto node = node_.lock();
+        if (node) {
+          RCLCPP_WARN_THROTTLE(
+            logger_, *node->get_clock(), 2000,
+            "Failed to lookup transform %s->%s: %s",
+            target_frame.c_str(), source_frame.c_str(), ex.what());
+        } else {
+          RCLCPP_WARN(
+            logger_,
+            "Failed to lookup transform %s->%s: %s",
+            target_frame.c_str(), source_frame.c_str(), ex.what());
+        }
+      }
+      return data;
+    };
+
+  const auto map_to_odom = lookup_transform("map", "odom");
+  const auto map_to_base = lookup_transform("map", "base_footprint");
+
   // record data
   dynamic_window_pure_pursuit::recordData(
     regulation_curvature,
@@ -370,7 +407,8 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     max_linear_accel, max_linear_decel,
     max_angular_accel, max_angular_decel,
     control_duration_,
-    pose, speed, constraints_violation_flag, battery_state_, imu_);
+    pose, speed, constraints_violation_flag, battery_state_, imu_,
+    map_to_odom, map_to_base);
 
   last_command_velocity_ = cmd_vel.twist;
 
