@@ -134,6 +134,7 @@ void RegulatedPurePursuitController::deactivate()
   curvature_carrot_pub_->on_deactivate();
   is_rotating_to_heading_pub_->on_deactivate();
   param_handler_->deactivate();
+  last_command_velocity_ = geometry_msgs::msg::Twist();
 }
 
 void RegulatedPurePursuitController::batteryStateCallback(
@@ -498,6 +499,7 @@ void RegulatedPurePursuitController::reset()
   cancelling_ = false;
   finished_cancelling_ = false;
   has_reached_xy_tolerance_ = false;
+  last_command_velocity_ = geometry_msgs::msg::Twist();
 }
 
 double RegulatedPurePursuitController::findVelocitySignChange(
